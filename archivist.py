@@ -106,6 +106,11 @@ def sync_to_github():
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
         subprocess.run(["git", "commit", "-m", f"Archivist: Auto-sync Brain {timestamp}"], check=True)
         
+        # Inject Railway cloud credentials if available
+        pat = os.getenv('GITHUB_PAT')
+        if pat:
+            subprocess.run(["git", "remote", "set-url", "origin", f"https://jayzhuang1996:{pat}@github.com/jayzhuang1996/Personal-Memory.git"], check=True)
+        
         # Push to remote 
         subprocess.run(["git", "push", "origin", "main"], check=True)
         print("✅ Successfully pushed new Memory Bank files to GitHub.")
