@@ -1,1 +1,1 @@
-worker: python telegram_biographer.py
+web: python telegram_biographer.py
