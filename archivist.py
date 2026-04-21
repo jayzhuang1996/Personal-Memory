@@ -8,7 +8,8 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 load_dotenv(".env")
-client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+openai_key = os.getenv('OPENAI_API_KEY', '').strip()
+client = OpenAI(api_key=openai_key)
 
 # Directories
 RAW_DIR = Path("transcripts/raw")

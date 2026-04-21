@@ -13,7 +13,8 @@ TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 USER_CHAT_ID = os.getenv('USER_CHAT_ID')  # Needed to proactively send messages at 11 PM
 
 # Init Synchronous OpenAI Client 
-openai_client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+openai_key = os.getenv('OPENAI_API_KEY', '').strip()
+openai_client = OpenAI(api_key=openai_key)
 
 # Directories for deep storage
 AUDIO_DIR = Path("raw_audio")
