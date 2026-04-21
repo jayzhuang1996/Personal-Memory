@@ -100,6 +100,10 @@ def sync_to_github():
     """Autonomously pushes the new Memory Bank files back to the remote repository."""
     print("\n🔄 Initiating Cloud-to-Local Git Sync...")
     try:
+        # Railway containers lack a default Git identity
+        subprocess.run(["git", "config", "--global", "user.email", "archivist@railway.app"])
+        subprocess.run(["git", "config", "--global", "user.name", "AI Archivist Bot"])
+
         # Add all new Markdown changes
         subprocess.run(["git", "add", "."], check=True)
         
