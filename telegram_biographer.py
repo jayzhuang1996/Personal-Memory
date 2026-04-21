@@ -1,15 +1,19 @@
 import os
 import datetime
+import asyncio
 from pathlib import Path
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, MessageHandler, CommandHandler, ContextTypes, filters
-from openai import AsyncOpenAI
+from openai import OpenAI
 
 # Load environment variables
 load_dotenv(".env")
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 USER_CHAT_ID = os.getenv('USER_CHAT_ID')  # Needed to proactively send messages at 11 PM
+
+# Init Synchronous OpenAI Client 
+openai_client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
 
 # Directories for deep storage
 AUDIO_DIR = Path("raw_audio")
@@ -18,6 +22,33 @@ TRANSCRIPT_DIR = Path("transcripts/raw")
 AUDIO_DIR.mkdir(exist_ok=True)
 IMAGE_DIR.mkdir(exist_ok=True)
 TRANSCRIPT_DIR.mkdir(parents=True, exist_ok=True)
+
+def transcribe_sync(path_str: str) -> str:
+    """Robust synchronous wrapper for OpenAI API to prevent threading loops"""
+    with open(path_str, "rb") as audio_file:
+        return openai_client.audio.transcriptions.create(
+            model="whisper-1", 
+            file=audio_file
+        ).text
+
+def vision_sync(path_str: str) -> str:
+    """Robust synchronous wrapper for OpenAI Vision"""
+    import base64
+    with open(path_str, "rb") as image_file:
+        encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
+    response = openai_client.chat.completions.create(
+        model="gpt-4o",
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Describe this image in detail. If it's a whiteboard or text, transcribe it. If it's a memory, describe the scene. We are adding this to a personal life documentary."},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{encoded_string}"}}
+                ],
+            }
+        ]
+    )
+    return response.choices[0].message.content
 
 async def build_system_prompt():
     """
@@ -77,16 +108,9 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     
     await update.message.reply_text(f"✅ Raw audio archived to `raw_audio/voice_{timestamp}.ogg`. Processing transcription...")
     
-    # 2. Transcribe (Whisper API)
+    # 2. Transcribe (Whisper API directly on a clean worker thread)
     try:
-        # Instantiate inside the async loop to prevent httpx socket connection errors
-        local_openai_client = AsyncOpenAI(api_key=os.getenv('OPENAI_API_KEY'))
-        with open(audio_path, "rb") as audio_file:
-            transcription = await local_openai_client.audio.transcriptions.create(
-                model="whisper-1",
-                file=audio_file
-            )
-        transcript_text = transcription.text
+        transcript_text = await asyncio.to_thread(transcribe_sync, str(audio_path))
         
         # Save transcript
         transcript_path = TRANSCRIPT_DIR / f"transcript_{timestamp}.md"
@@ -125,24 +149,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     
     # Run OpenAI Vision
     try:
-        import base64
-        local_openai_client = AsyncOpenAI(api_key=os.getenv('OPENAI_API_KEY'))
-        with open(photo_path, "rb") as image_file:
-            encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
-            
-        response = await local_openai_client.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "Describe this image in detail. If it's a whiteboard or text, transcribe it. If it's a memory, describe the scene. We are adding this to a personal life documentary."},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{encoded_string}"}}
-                    ],
-                }
-            ]
-        )
-        vision_text = response.choices[0].message.content
+        vision_text = await asyncio.to_thread(vision_sync, str(photo_path))
         
         # Save transcript
         transcript_path = TRANSCRIPT_DIR / f"image_{timestamp}.md"
