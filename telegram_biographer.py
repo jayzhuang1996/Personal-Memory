@@ -119,7 +119,9 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             
         await update.message.reply_text(f"✅ Text conversion complete.\n\n_{transcript_text}_", parse_mode="Markdown")
     except Exception as e:
-        await update.message.reply_text(f"❌ Transcription failed: {e}")
+        import traceback
+        err_msg = traceback.format_exc()
+        await update.message.reply_text(f"❌ Transcription failed:\n```\n{err_msg[:3000]}\n```", parse_mode="MarkdownV2")
         return
         
     # 3. Send transcript to the LLM along with the Conversation History
@@ -158,7 +160,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             
         await update.message.reply_text(f"✅ Image securely saved. Vision Output:\n\n_{vision_text}_", parse_mode="Markdown")
     except Exception as e:
-        await update.message.reply_text(f"❌ Vision Analysis failed: {e}")
+        import traceback
+        err_msg = traceback.format_exc()
+        await update.message.reply_text(f"❌ Vision Analysis failed:\n```\n{err_msg[:3000]}\n```", parse_mode="MarkdownV2")
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a message when the command /start is issued."""
