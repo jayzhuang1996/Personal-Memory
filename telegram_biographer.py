@@ -118,7 +118,12 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         with open(transcript_path, "w") as f:
             f.write(f"# Voice Note: {timestamp}\n\n{transcript_text}\n")
             
-        await update.message.reply_text(f"✅ Text conversion complete.\n\n_{transcript_text}_", parse_mode="Markdown")
+        await update.message.reply_text(f"✅ Text conversion complete.\n\n_{transcript_text}_\n\n⌛ Waking up Archivist to parse and sync to GitHub...", parse_mode="Markdown")
+        
+        # Trigger the archivist to parse the inbox and push to Github
+        import subprocess
+        subprocess.Popen(["python", "archivist.py"])
+        
     except Exception as e:
         import traceback
         err_msg = traceback.format_exc()
@@ -159,7 +164,12 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         with open(transcript_path, "w") as f:
             f.write(f"# Image Capture: {timestamp}\n\n**Source File:** `raw_images/image_{timestamp}.jpg`\n\n**Vision Analysis:**\n{vision_text}\n")
             
-        await update.message.reply_text(f"✅ Image securely saved. Vision Output:\n\n_{vision_text}_", parse_mode="Markdown")
+        await update.message.reply_text(f"✅ Image securely saved. Vision Output:\n\n_{vision_text}_\n\n⌛ Waking up Archivist to parse and sync to GitHub...", parse_mode="Markdown")
+        
+        # Trigger the archivist
+        import subprocess
+        subprocess.Popen(["python", "archivist.py"])
+        
     except Exception as e:
         import traceback
         err_msg = traceback.format_exc()
