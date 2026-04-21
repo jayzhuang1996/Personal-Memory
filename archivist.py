@@ -99,28 +99,39 @@ def process_transcript(file_path: Path):
 def sync_to_github():
     """Autonomously pushes the new Memory Bank files back to the remote repository."""
     print("\n🔄 Initiating Cloud-to-Local Git Sync...")
+    
+    pat = os.getenv('GITHUB_PAT', '').strip()
+    if not pat:
+        print("❌ GITHUB_PAT is not set in Railway Variables. Cannot push to GitHub.")
+        return
+
     try:
-        # Railway containers lack a default Git identity
-        subprocess.run(["git", "config", "--global", "user.email", "archivist@railway.app"])
-        subprocess.run(["git", "config", "--global", "user.name", "AI Archivist Bot"])
+        # Railway containers lack a default Git identity - inject before any git commands
+        subprocess.run(["git", "config", "--global", "user.email", "archivist@railway.app"], check=True)
+        subprocess.run(["git", "config", "--global", "user.name", "AI Archivist Bot"], check=True)
+        
+        # Set authenticated remote URL first
+        subprocess.run(["git", "remote", "set-url", "origin", 
+                        f"https://jayzhuang1996:{pat}@github.com/jayzhuang1996/Personal-Memory.git"], check=True)
 
         # Add all new Markdown changes
-        subprocess.run(["git", "add", "."], check=True)
+        result = subprocess.run(["git", "add", "."], check=True, capture_output=True, text=True)
         
         # Commit
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-        subprocess.run(["git", "commit", "-m", f"Archivist: Auto-sync Brain {timestamp}"], check=True)
+        commit_result = subprocess.run(
+            ["git", "commit", "-m", f"Archivist: Auto-sync Brain {timestamp}"],
+            capture_output=True, text=True
+        )
+        if "nothing to commit" in commit_result.stdout:
+            print("⚠️ Nothing new to commit - no changes detected.")
+            return
         
-        # Inject Railway cloud credentials if available
-        pat = os.getenv('GITHUB_PAT')
-        if pat:
-            subprocess.run(["git", "remote", "set-url", "origin", f"https://jayzhuang1996:{pat}@github.com/jayzhuang1996/Personal-Memory.git"], check=True)
-        
-        # Push to remote 
-        subprocess.run(["git", "push", "origin", "main"], check=True)
-        print("✅ Successfully pushed new Memory Bank files to GitHub.")
+        # Push
+        push_result = subprocess.run(["git", "push", "origin", "main"], check=True, capture_output=True, text=True)
+        print(f"✅ Successfully pushed new Memory Bank files to GitHub.\n{push_result.stdout}")
     except subprocess.CalledProcessError as e:
-        print(f"⚠️ Git Sync encountered an issue (perhaps no changes to commit?): {e}")
+        print(f"❌ Git Push FAILED: {e}\nSTDOUT: {e.stdout}\nSTDERR: {e.stderr}")
 
 def main():
     if not os.path.exists(RAW_DIR):
