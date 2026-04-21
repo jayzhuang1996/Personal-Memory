@@ -22,11 +22,11 @@
 - [x] Write the `Archivist` script logic: The LLM outputs parsed strings -> Python physically creates or appends `memory_bank/` Markdown files.
 - [x] End-to-end local test: Talk into Telegram -> Bot transcribes -> Archivist extracts entities -> `memory_bank/` files appear in IDE.
 
-## Phase 4: Cloud & Sync Execution (Railway) [✅ IN PROGRESS]
+## Phase 4: Cloud & Sync Execution (Railway) [✅ COMPLETE]
 - [x] Implement Git automation loop inside script (Bot runs `git commit` and `git push` upon ending the interview).
-- [ ] Create `Procfile` / deployment files necessary for Railway.
-- [ ] Push to Railway and conduct a live cloud test at 11:00 PM EST.
+- [x] Create `Procfile` / deployment files necessary for Railway.
+- [x] Push to Railway and conduct a live cloud test at 11:00 PM EST.
 
-## Phase 5: Historical Backlog Crawl (Optional future step)
+## Phase 5: Historical Backlog Crawl [✅ IN PROGRESS]
 - [ ] Run scanner on `~/Desktop/Personal Agent projects`.
 - [ ] Feed past codebases to the Archivist to populate the `memory_bank` history.

@@ -11,9 +11,6 @@ load_dotenv(".env")
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 USER_CHAT_ID = os.getenv('USER_CHAT_ID')  # Needed to proactively send messages at 11 PM
 
-# Init OpenAI Client
-openai_client = AsyncOpenAI(api_key=os.getenv('OPENAI_API_KEY'))
-
 # Directories for deep storage
 AUDIO_DIR = Path("raw_audio")
 IMAGE_DIR = Path("raw_images")
@@ -82,8 +79,10 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     
     # 2. Transcribe (Whisper API)
     try:
+        # Instantiate inside the async loop to prevent httpx socket connection errors
+        local_openai_client = AsyncOpenAI(api_key=os.getenv('OPENAI_API_KEY'))
         with open(audio_path, "rb") as audio_file:
-            transcription = await openai_client.audio.transcriptions.create(
+            transcription = await local_openai_client.audio.transcriptions.create(
                 model="whisper-1",
                 file=audio_file
             )
@@ -127,10 +126,11 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # Run OpenAI Vision
     try:
         import base64
+        local_openai_client = AsyncOpenAI(api_key=os.getenv('OPENAI_API_KEY'))
         with open(photo_path, "rb") as image_file:
             encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
             
-        response = await openai_client.chat.completions.create(
+        response = await local_openai_client.chat.completions.create(
             model="gpt-4o",
             messages=[
                 {
