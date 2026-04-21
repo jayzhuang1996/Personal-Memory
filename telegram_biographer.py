@@ -121,8 +121,10 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text(f"✅ Text conversion complete.\n\n_{transcript_text}_\n\n⌛ Waking up Archivist to parse and sync to GitHub...", parse_mode="Markdown")
         
         # Trigger the archivist to parse the inbox and push to Github
+        import sys
         import subprocess
-        subprocess.Popen(["python", "archivist.py"])
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        subprocess.Popen([sys.executable, os.path.join(script_dir, "archivist.py")], cwd=script_dir)
         
     except Exception as e:
         import traceback
@@ -167,8 +169,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text(f"✅ Image securely saved. Vision Output:\n\n_{vision_text}_\n\n⌛ Waking up Archivist to parse and sync to GitHub...", parse_mode="Markdown")
         
         # Trigger the archivist
+        import sys
         import subprocess
-        subprocess.Popen(["python", "archivist.py"])
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        subprocess.Popen([sys.executable, os.path.join(script_dir, "archivist.py")], cwd=script_dir)
         
     except Exception as e:
         import traceback
