@@ -3,6 +3,8 @@ import json
 import shutil
 import datetime
 import subprocess
+import base64
+import requests
 from pathlib import Path
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -97,41 +99,59 @@ def process_transcript(file_path: Path):
         print(f"  ❌ Error processing {file_path.name}: {e}")
 
 def sync_to_github():
-    """Autonomously pushes the new Memory Bank files back to the remote repository."""
-    print("\n🔄 Initiating Cloud-to-Local Git Sync...")
+    """Pushes new Memory Bank files to GitHub using the REST API (no git binary needed)."""
+    print("\n🔄 Initiating Cloud-to-Local Git Sync via GitHub API...")
     
     pat = os.getenv('GITHUB_PAT', '').strip()
     if not pat:
-        print("❌ GITHUB_PAT is not set in Railway Variables. Cannot push to GitHub.")
+        print("❌ GITHUB_PAT is not set. Cannot push to GitHub.")
         return
 
-    try:
-        # Railway containers lack a default Git identity - inject before any git commands
-        subprocess.run(["git", "config", "--global", "user.email", "archivist@railway.app"], check=True)
-        subprocess.run(["git", "config", "--global", "user.name", "AI Archivist Bot"], check=True)
-        
-        # Set authenticated remote URL first
-        subprocess.run(["git", "remote", "set-url", "origin", 
-                        f"https://jayzhuang1996:{pat}@github.com/jayzhuang1996/Personal-Memory.git"], check=True)
+    repo = "jayzhuang1996/Personal-Memory"
+    branch = "main"
+    headers = {
+        "Authorization": f"token {pat}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    base_api = f"https://api.github.com/repos/{repo}/contents"
 
-        # Add all new Markdown changes
-        result = subprocess.run(["git", "add", "."], check=True, capture_output=True, text=True)
-        
-        # Commit
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-        commit_result = subprocess.run(
-            ["git", "commit", "-m", f"Archivist: Auto-sync Brain {timestamp}"],
-            capture_output=True, text=True
-        )
-        if "nothing to commit" in commit_result.stdout:
-            print("⚠️ Nothing new to commit - no changes detected.")
-            return
-        
-        # Push
-        push_result = subprocess.run(["git", "push", "origin", "main"], check=True, capture_output=True, text=True)
-        print(f"✅ Successfully pushed new Memory Bank files to GitHub.\n{push_result.stdout}")
-    except subprocess.CalledProcessError as e:
-        print(f"❌ Git Push FAILED: {e}\nSTDOUT: {e.stdout}\nSTDERR: {e.stderr}")
+    # Walk memory_bank and transcripts/archive for new/changed files
+    dirs_to_sync = [MEMORY_BANK, ARCHIVE_DIR]
+    pushed = 0
+    
+    for sync_dir in dirs_to_sync:
+        if not sync_dir.exists():
+            continue
+        for file_path in sync_dir.rglob("*"):
+            if not file_path.is_file():
+                continue
+            
+            rel_path = file_path.relative_to(Path("."))
+            api_url = f"{base_api}/{rel_path}"
+            
+            # Read file and encode
+            content = file_path.read_bytes()
+            encoded = base64.b64encode(content).decode()
+            
+            # Check if file already exists on GitHub (need its SHA to update)
+            existing = requests.get(api_url, headers=headers)
+            
+            payload = {
+                "message": f"Archivist: sync {rel_path} - {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                "content": encoded,
+                "branch": branch
+            }
+            if existing.status_code == 200:
+                payload["sha"] = existing.json()["sha"]
+            
+            resp = requests.put(api_url, headers=headers, json=payload)
+            if resp.status_code in (200, 201):
+                print(f"  ✅ Synced: {rel_path}")
+                pushed += 1
+            else:
+                print(f"  ❌ Failed to sync {rel_path}: {resp.status_code} {resp.text[:200]}")
+    
+    print(f"\n✅ GitHub Sync complete. {pushed} file(s) pushed.")
 
 def main():
     if not os.path.exists(RAW_DIR):
