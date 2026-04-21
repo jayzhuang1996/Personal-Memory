@@ -208,8 +208,23 @@ def main():
     print("  - Listening for Voice Notes")
     print("  - 11 PM EST Scheduler Active")
     
-    # Drop pending updates forcefully severs any ghost connections lingering on Telegram's API
-    application.run_polling(drop_pending_updates=True)
+    # Use webhook on Railway (eliminates Conflict errors from rolling deploys)
+    # Fall back to polling for local development
+    railway_domain = os.getenv('RAILWAY_PUBLIC_DOMAIN', '').strip()
+    if railway_domain:
+        webhook_url = f"https://{railway_domain}/{TELEGRAM_BOT_TOKEN}"
+        port = int(os.getenv('PORT', 8443))
+        print(f"  - Webhook mode: {webhook_url}")
+        application.run_webhook(
+            listen="0.0.0.0",
+            port=port,
+            url_path=TELEGRAM_BOT_TOKEN,
+            webhook_url=webhook_url,
+            drop_pending_updates=True
+        )
+    else:
+        print("  - Polling mode (local dev)")
+        application.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
     main()
