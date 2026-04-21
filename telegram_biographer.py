@@ -205,7 +205,8 @@ def main():
     print("  - Listening for Voice Notes")
     print("  - 11 PM EST Scheduler Active")
     
-    application.run_polling()
+    # Drop pending updates forcefully severs any ghost connections lingering on Telegram's API
+    application.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
     main()
