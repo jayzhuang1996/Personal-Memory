@@ -1,4 +1,5 @@
 import os
+import sys
 import datetime
 import asyncio
 from pathlib import Path
@@ -6,6 +7,10 @@ from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, MessageHandler, CommandHandler, ContextTypes, filters
 from openai import OpenAI
+
+# Ensure archivist can be imported from same directory
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import archivist
 
 # Load environment variables
 load_dotenv(".env")
@@ -120,11 +125,8 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             
         await update.message.reply_text(f"✅ Text conversion complete.\n\n_{transcript_text}_\n\n⌛ Waking up Archivist to parse and sync to GitHub...", parse_mode="Markdown")
         
-        # Trigger the archivist to parse the inbox and push to Github
-        import sys
-        import subprocess
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        subprocess.Popen([sys.executable, os.path.join(script_dir, "archivist.py")], cwd=script_dir)
+        # Call archivist directly (no subprocess) to guarantee correct working directory
+        await asyncio.to_thread(archivist.main)
         
     except Exception as e:
         import traceback
@@ -168,11 +170,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             
         await update.message.reply_text(f"✅ Image securely saved. Vision Output:\n\n_{vision_text}_\n\n⌛ Waking up Archivist to parse and sync to GitHub...", parse_mode="Markdown")
         
-        # Trigger the archivist
-        import sys
-        import subprocess
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        subprocess.Popen([sys.executable, os.path.join(script_dir, "archivist.py")], cwd=script_dir)
+        # Call archivist directly (no subprocess) to guarantee correct working directory
+        await asyncio.to_thread(archivist.main)
         
     except Exception as e:
         import traceback
