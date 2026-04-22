@@ -30,3 +30,11 @@
 ## Phase 5: Historical Backlog Crawl [✅ IN PROGRESS]
 - [ ] Run scanner on `~/Desktop/Personal Agent projects`.
 - [ ] Feed past codebases to the Archivist to populate the `memory_bank` history.
+
+## Phase 6: Conversational Session Engine [✅ IN PROGRESS]
+- [ ] Add in-memory SESSION state dict to track conversation turns per day.
+- [ ] Rewrite `handle_voice` to append turns to SESSION buffer (do NOT immediately archive).
+- [ ] Implement LLM follow-up logic: bot asks follow-up questions until STATUS: COMPLETE detected.
+- [ ] On STATUS: COMPLETE, consolidate ALL session turns into ONE daily transcript and trigger Archivist.
+- [ ] Rewrite `generate_dynamic_question()` to read actual memory_bank/ files and identify knowledge gaps using LLM.
+- [ ] Add raw_audio/ and raw_images/ to the GitHub API sync targets.

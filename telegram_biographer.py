@@ -14,10 +14,10 @@ import archivist
 
 # Load environment variables
 load_dotenv(".env")
-TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-USER_CHAT_ID = os.getenv('USER_CHAT_ID')  # Needed to proactively send messages at 11 PM
+TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '').strip()
+USER_CHAT_ID = os.getenv('USER_CHAT_ID', '').strip()
 
-# Init Synchronous OpenAI Client 
+# Init Synchronous OpenAI Client
 openai_key = os.getenv('OPENAI_API_KEY', '').strip()
 openai_client = OpenAI(api_key=openai_key)
 
@@ -29,16 +29,40 @@ AUDIO_DIR.mkdir(exist_ok=True)
 IMAGE_DIR.mkdir(exist_ok=True)
 TRANSCRIPT_DIR.mkdir(parents=True, exist_ok=True)
 
+# ─────────────────────────────────────────────
+# SESSION STATE MACHINE
+# Holds the entire day's conversation in memory.
+# Resets each time a new daily interview begins.
+# ─────────────────────────────────────────────
+SESSION = {
+    "active": False,
+    "date": None,           # today's date string (YYYY-MM-DD)
+    "turns": [],            # list of {"role": ..., "content": ...}
+    "opening_question": "", # the question that started this session
+}
+
+MAX_TURNS = 6  # Max total assistant+user turns before forcing completion
+
+def reset_session():
+    SESSION["active"] = False
+    SESSION["date"] = None
+    SESSION["turns"] = []
+    SESSION["opening_question"] = ""
+
+# ─────────────────────────────────────────────
+# SYNC HELPERS
+# ─────────────────────────────────────────────
+
 def transcribe_sync(path_str: str) -> str:
-    """Robust synchronous wrapper for OpenAI API to prevent threading loops"""
+    """Robust synchronous wrapper for OpenAI Whisper."""
     with open(path_str, "rb") as audio_file:
         return openai_client.audio.transcriptions.create(
-            model="whisper-1", 
+            model="whisper-1",
             file=audio_file
         ).text
 
 def vision_sync(path_str: str) -> str:
-    """Robust synchronous wrapper for OpenAI Vision"""
+    """Robust synchronous wrapper for OpenAI Vision."""
     import base64
     with open(path_str, "rb") as image_file:
         encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
@@ -56,160 +80,263 @@ def vision_sync(path_str: str) -> str:
     )
     return response.choices[0].message.content
 
-async def build_system_prompt():
-    """
-    CRITICAL STEP: We read the local Markdown instruction files from disk EVERY time.
-    If we don't do this, the LLM deployed to Railway will 'forget' your custom rules.
-    """
-    with open("BRAIN_SCHEMA.md", "r") as f:
-        schema = f.read()
-        
-    with open("LIFE_BUCKETS.md", "r") as f:
-        buckets = f.read()
+# ─────────────────────────────────────────────
+# DYNAMIC QUESTION GENERATOR
+# Reads the actual memory bank to find knowledge gaps.
+# ─────────────────────────────────────────────
 
-    return f"""
-    You are Jay's proactive Autobiographer. You are following an aggressive, back-and-forth interview format.
+def generate_dynamic_question_sync() -> str:
+    """Read existing memory bank and use LLM to generate a targeted, non-repetitive question."""
+    # Collect a sample of existing memory bank content
+    memory_bank = Path("memory_bank")
+    memory_snippets = []
     
-    # YOUR DIRECTIVES:
-    {schema}
-    
-    # YOUR DOMAINS (WHAT TO ASK ABOUT):
-    {buckets}
-    
-    # CONVERSATION RULES:
-    1. If the user's answer is shallow, push back and ask ONE deep follow-up question.
-    2. NEVER ask more than 3 follow-up questions total. 
-    3. Once you successfully extract the emotional or factual root of the data, you MUST append "STATUS: COMPLETE" to your final message. This tells the Python script that the interview is over and it should compile the markdown files.
-    """
+    if memory_bank.exists():
+        for md_file in list(memory_bank.rglob("*.md"))[:10]:  # Read up to 10 nodes
+            try:
+                content = md_file.read_text()[:500]  # First 500 chars per file
+                memory_snippets.append(f"### {md_file.name}\n{content}")
+            except Exception:
+                pass
 
-async def generate_dynamic_question():
-    """
-    Reads the existing Memory Bank (index.md) to find gaps in the timeline or un-explored projects.
-    Passes this context to an LLM to generate a highly specific, non-repetitive prompt.
-    (Stubbed here, will map to Claude/OpenAI API)
-    """
-    return "Jay, looking at your projects, I see you built the FreightIQ MVP but there is no context on your co-founders or team dynamics. What was the most challenging interpersonal moment when building that?"
+    # Also read LIFE_BUCKETS for taxonomy reference
+    try:
+        buckets = Path("LIFE_BUCKETS.md").read_text()
+    except Exception:
+        buckets = ""
 
-async def send_daily_interview(context: ContextTypes.DEFAULT_TYPE):
-    """Fired daily at 11PM EST by the Application JobQueue"""
-    question = await generate_dynamic_question()
+    context = "\n\n".join(memory_snippets) if memory_snippets else "No memory bank entries yet. Start from scratch."
+
+    prompt = f"""You are Jay's personal AI biographer conducting a daily life documentary interview.
+
+# EXISTING MEMORY BANK (what you already know):
+{context}
+
+# LIFE DOMAINS TO COVER (your taxonomy):
+{buckets}
+
+# YOUR TASK:
+Generate ONE highly specific, emotionally rich, open-ended interview question for tonight.
+- Do NOT ask about topics already well-covered in the memory bank above.
+- Focus on domains that have sparse or zero coverage.
+- Ask about specific events, people, feelings, or turning points — not generic topics.
+- Be warm and human, not robotic.
+- Output ONLY the question itself. No prefix, no explanation."""
+
+    response = openai_client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=150
+    )
+    return response.choices[0].message.content.strip()
+
+# ─────────────────────────────────────────────
+# FOLLOW-UP ENGINE
+# Given the conversation so far, either asks a follow-up
+# or outputs STATUS: COMPLETE to end the session.
+# ─────────────────────────────────────────────
+
+def get_followup_or_complete_sync(turns: list) -> str:
+    """Call LLM to decide whether to ask a follow-up or end the session."""
+    system = """You are Jay's personal AI biographer conducting a structured life documentary interview.
+
+Your job:
+1. Read the conversation so far.
+2. If the user's last response was substantive and there is a natural follow-up question, ask it. Keep it short and specific.
+3. If you have collected enough depth (3+ solid responses, or the topic is exhausted), output exactly: STATUS: COMPLETE
+
+Rules:
+- Ask at most 2-3 follow-up questions per session before completing.
+- Never be repetitive.
+- Be warm and conversational.
+- If outputting STATUS: COMPLETE, output ONLY those words, nothing else."""
+
+    response = openai_client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "system", "content": system}] + turns,
+        max_tokens=200
+    )
+    return response.choices[0].message.content.strip()
+
+# ─────────────────────────────────────────────
+# SESSION FINALIZATION
+# Consolidates all turns into ONE daily transcript.
+# ─────────────────────────────────────────────
+
+async def finalize_session(context: ContextTypes.DEFAULT_TYPE):
+    """Consolidate the full session turns into one transcript and run Archivist."""
+    today = SESSION["date"] or datetime.datetime.now().strftime("%Y-%m-%d")
     
-    msg = f"🕰️ <b>11:00 PM - Daily Biographer Sync</b>\n\n{question}\n\n<i>🎤 (Reply to this message with a Voice Note)</i>"
-    await context.bot.send_message(chat_id=USER_CHAT_ID, text=msg, parse_mode='HTML')
+    # Build consolidated transcript
+    lines = [f"# Daily Interview: {today}\n", f"**Opening Question:** {SESSION['opening_question']}\n"]
+    for turn in SESSION["turns"]:
+        role = "🤖 Biographer" if turn["role"] == "assistant" else "🎙️ Jay"
+        lines.append(f"\n**{role}:** {turn['content']}")
+    
+    consolidated = "\n".join(lines)
+    
+    # Write to transcripts/raw/ as a single daily file
+    daily_path = TRANSCRIPT_DIR / f"daily_{today}.md"
+    with open(daily_path, "w") as f:
+        f.write(consolidated)
+    
+    print(f"📄 Consolidated daily transcript saved: {daily_path}")
+    
+    # Reset session before archiving
+    reset_session()
+    
+    await context.bot.send_message(
+        chat_id=USER_CHAT_ID,
+        text="✅ *Interview complete!* Archiving your memories now...",
+        parse_mode="Markdown"
+    )
+    
+    # Run archivist on the single daily transcript
+    await asyncio.to_thread(archivist.main)
+    
+    await context.bot.send_message(
+        chat_id=USER_CHAT_ID,
+        text="🧠 *Memory Bank updated!* Your reflections have been archived. See you tomorrow night.",
+        parse_mode="Markdown"
+    )
+
+# ─────────────────────────────────────────────
+# TELEGRAM HANDLERS
+# ─────────────────────────────────────────────
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles incoming voice messages, stores the raw audio, and transcribes it"""
+    """Handles incoming voice messages with full session conversation management."""
     voice = update.message.voice
     if not voice:
         return
-        
-    await update.message.reply_text("📥 Downloading secure voice archive...")
     
-    # 1. Download and Keep the Raw Audio (.ogg)
-    file = await context.bot.get_file(voice.file_id)
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M")
+    
+    # Download and archive raw audio
+    await update.message.reply_text("🎙️ Got it! Transcribing...")
+    voice_file = await context.bot.get_file(voice.file_id)
     audio_path = AUDIO_DIR / f"voice_{timestamp}.ogg"
+    await voice_file.download_to_drive(str(audio_path))
     
-    await file.download_to_drive(audio_path)
-    
-    await update.message.reply_text(f"✅ Raw audio archived to `raw_audio/voice_{timestamp}.ogg`. Processing transcription...")
-    
-    # 2. Transcribe (Whisper API directly on a clean worker thread)
+    # Transcribe
     try:
         transcript_text = await asyncio.to_thread(transcribe_sync, str(audio_path))
-        
-        # Save transcript
-        transcript_path = TRANSCRIPT_DIR / f"transcript_{timestamp}.md"
-        with open(transcript_path, "w") as f:
-            f.write(f"# Voice Note: {timestamp}\n\n{transcript_text}\n")
-            
-        await update.message.reply_text(f"✅ Text conversion complete.\n\n_{transcript_text}_\n\n⌛ Waking up Archivist to parse and sync to GitHub...", parse_mode="Markdown")
-        
-        # Call archivist directly (no subprocess) to guarantee correct working directory
-        await asyncio.to_thread(archivist.main)
-        
     except Exception as e:
         import traceback
-        err_msg = traceback.format_exc()
-        await update.message.reply_text(f"❌ Transcription failed:\n```\n{err_msg[:3000]}\n```", parse_mode="MarkdownV2")
+        await update.message.reply_text(f"❌ Transcription failed:\n```\n{traceback.format_exc()[:2000]}\n```")
         return
-        
-    # 3. Send transcript to the LLM along with the Conversation History
-    # system_prompt = await build_system_prompt()
     
-    # 4. Check LLM Output for the stopping condition
-    # llm_response = call_llm(system_prompt, user_transcript_text)
-    #
-    # if "STATUS: COMPLETE" in llm_response:
-    #     await update.message.reply_text("✅ Interview Complete. Compiling into Memory Bank...")
-    #     # Trigger the Archivist Agent to parse the transcript into memory_bank/
-    # else:
-    #     await update.message.reply_text(f"🤖 {llm_response}")
-    #     # Wait for the next voice note from the user
+    # Add user turn to session
+    SESSION["turns"].append({"role": "user", "content": transcript_text})
+    
+    # Echo the transcription back
+    await update.message.reply_text(f"_\"{transcript_text}\"_", parse_mode="Markdown")
+    
+    # Check if we should end or continue
+    user_turn_count = sum(1 for t in SESSION["turns"] if t["role"] == "user")
+    
+    if user_turn_count >= (MAX_TURNS // 2):
+        # Force completion after max turns
+        await finalize_session(context)
+        return
+    
+    # Ask the LLM for either a follow-up or STATUS: COMPLETE
+    response = await asyncio.to_thread(get_followup_or_complete_sync, SESSION["turns"])
+    
+    if "STATUS: COMPLETE" in response:
+        await finalize_session(context)
+    else:
+        # Add assistant follow-up to session
+        SESSION["turns"].append({"role": "assistant", "content": response})
+        await update.message.reply_text(
+            f"🤖 {response}\n\n_🎤 (Reply with a Voice Note)_",
+            parse_mode="Markdown"
+        )
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles incoming photos, downloads them, and runs OpenAI Vision description"""
-    photo = update.message.photo[-1] # Get the highest resolution photo
-    
-    await update.message.reply_text("📸 Image received. Archiving to disk and generating Vision context...")
-    
-    file = await context.bot.get_file(photo.file_id)
+    """Handles incoming photos — extract vision analysis and add to session."""
+    photo = update.message.photo[-1]  # Highest resolution
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M")
-    photo_path = IMAGE_DIR / f"image_{timestamp}.jpg"
     
-    await file.download_to_drive(photo_path)
+    await update.message.reply_text("📸 Photo received! Analyzing...")
+    
+    photo_file = await context.bot.get_file(photo.file_id)
+    photo_path = IMAGE_DIR / f"image_{timestamp}.jpg"
+    await photo_file.download_to_drive(str(photo_path))
     
     # Run OpenAI Vision
     try:
         vision_text = await asyncio.to_thread(vision_sync, str(photo_path))
         
-        # Save transcript
-        transcript_path = TRANSCRIPT_DIR / f"image_{timestamp}.md"
-        with open(transcript_path, "w") as f:
-            f.write(f"# Image Capture: {timestamp}\n\n**Source File:** `raw_images/image_{timestamp}.jpg`\n\n**Vision Analysis:**\n{vision_text}\n")
-            
-        await update.message.reply_text(f"✅ Image securely saved. Vision Output:\n\n_{vision_text}_\n\n⌛ Waking up Archivist to parse and sync to GitHub...", parse_mode="Markdown")
+        # Add image analysis as a user turn in the session
+        SESSION["turns"].append({"role": "user", "content": f"[Image shared] {vision_text}"})
         
-        # Call archivist directly (no subprocess) to guarantee correct working directory
+        await update.message.reply_text(
+            f"✅ Image analyzed!\n\n_{vision_text}_\n\n⌛ Waking up Archivist...",
+            parse_mode="Markdown"
+        )
+        
+        # Images immediately trigger archiving (no back-and-forth needed)
         await asyncio.to_thread(archivist.main)
         
     except Exception as e:
         import traceback
         err_msg = traceback.format_exc()
-        await update.message.reply_text(f"❌ Vision Analysis failed:\n```\n{err_msg[:3000]}\n```", parse_mode="MarkdownV2")
+        await update.message.reply_text(f"❌ Vision Analysis failed:\n```\n{err_msg[:2000]}\n```", parse_mode="MarkdownV2")
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send a message when the command /start is issued."""
-    msg = "✅ Biographer Systems Online.\n\nI am listening. Send me a voice note right now or wait for the 11 PM prompt."
-    await update.message.reply_text(msg)
+    """Manually start an interview session."""
+    reset_session()
+    SESSION["active"] = True
+    SESSION["date"] = datetime.datetime.now().strftime("%Y-%m-%d")
+    
+    await update.message.reply_text("🤖 *Biographer Systems Online.*\n\nGenerating your interview question...", parse_mode="Markdown")
+    
+    question = await asyncio.to_thread(generate_dynamic_question_sync)
+    SESSION["opening_question"] = question
+    SESSION["turns"].append({"role": "assistant", "content": question})
+    
+    await update.message.reply_text(
+        f"🕰️ *Daily Biographer Sync*\n\n{question}\n\n_🎤 (Reply with a Voice Note)_",
+        parse_mode="Markdown"
+    )
+
+async def send_daily_interview(context: ContextTypes.DEFAULT_TYPE):
+    """Fired daily at 11PM EST by the Application JobQueue."""
+    reset_session()
+    SESSION["active"] = True
+    SESSION["date"] = datetime.datetime.now().strftime("%Y-%m-%d")
+    
+    question = await asyncio.to_thread(generate_dynamic_question_sync)
+    SESSION["opening_question"] = question
+    SESSION["turns"].append({"role": "assistant", "content": question})
+    
+    msg = f"🕰️ <b>11:00 PM - Daily Biographer Sync</b>\n\n{question}\n\n<i>🎤 (Reply to this message with a Voice Note)</i>"
+    await context.bot.send_message(chat_id=USER_CHAT_ID, text=msg, parse_mode='HTML')
+
+# ─────────────────────────────────────────────
+# MAIN
+# ─────────────────────────────────────────────
 
 def main():
-    if not TELEGRAM_BOT_TOKEN:
-        print("❌ TELEGRAM_BOT_TOKEN missing in .env")
-        return
-
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     
-    # Handle incoming commands, voice notes, and photos
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(MessageHandler(filters.VOICE, handle_voice))
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     
-    # Schedule the 11 PM EST daily job (UTC -5)
-    # In production, timezone should be explicitly passed to job_queue
+    # Schedule the 11 PM EST daily job
     if USER_CHAT_ID:
-        import datetime
         import pytz
         est = pytz.timezone('US/Eastern')
         target_time = datetime.time(hour=23, minute=0, tzinfo=est)
         application.job_queue.run_daily(send_daily_interview, target_time)
-
+    
     print("🤖 Telegram Biographer Backend Started.")
-    print("  - Listening for Voice Notes")
+    print("  - Conversational Session Engine Active")
     print("  - 11 PM EST Scheduler Active")
     
-    # Use webhook on Railway (eliminates Conflict errors from rolling deploys)
-    # Fall back to polling for local development
+    # Use webhook on Railway, polling locally
     railway_domain = os.getenv('RAILWAY_PUBLIC_DOMAIN', '').strip()
     if railway_domain:
         webhook_url = f"https://{railway_domain}/{TELEGRAM_BOT_TOKEN}"
