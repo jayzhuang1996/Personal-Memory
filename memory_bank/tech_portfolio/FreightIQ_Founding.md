@@ -8,3 +8,11 @@ date: 2026-04-18
 ## New Entry
 Jay realized that the Odometer at Snapshot (miles) significantly influences model predictions. This insight was crucial to the development of the FreightIQ project's models and contributed to tuning and refining the algorithm for improved decision-making accuracy.
 
+---
+tags: [freightiq, startups]
+date: 2026-04-18
+---
+
+## New Entry
+Jay realized that leveraging model predictions with the right signals, such as 'Odometer at Snapshot' and 'Cumulative Repair Spend', was crucial while founding [[FreightIQ]]. The insights from visual data analytics indicated how often these signals affected model decision-making, guiding their implementation strategy in the trucking industry.
+
