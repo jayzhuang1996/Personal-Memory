@@ -115,8 +115,8 @@ def sync_to_github():
     }
     base_api = f"https://api.github.com/repos/{repo}/contents"
 
-    # Walk memory_bank and transcripts/archive for new/changed files
-    dirs_to_sync = [MEMORY_BANK, ARCHIVE_DIR]
+    # Walk memory_bank, transcripts/archive, raw_audio, and raw_images
+    dirs_to_sync = [MEMORY_BANK, ARCHIVE_DIR, Path("raw_audio"), Path("raw_images")]
     pushed = 0
     
     for sync_dir in dirs_to_sync:
