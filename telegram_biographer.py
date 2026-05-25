@@ -205,11 +205,71 @@ def _format_vault_for_prompt(vault_items: list[dict]) -> str:
     return "\n\n".join(parts)
 
 
+BEHAVIORAL_LOG = Path.home() / ".gbrain_vault" / "markdown" / "log" / "browsing_activity.jsonl"
+BEHAVIORAL_LOOKBACK_DAYS = 7
+
+
+def _read_behavioral_context() -> str:
+    """Aggregate recent browsing activity by domain. Returns a concise summary string."""
+    if not BEHAVIORAL_LOG.exists():
+        return ""
+
+    cutoff = datetime.datetime.now() - datetime.timedelta(days=BEHAVIORAL_LOOKBACK_DAYS)
+
+    domain_duration: dict[str, int] = {}
+    domain_titles: dict[str, list[str]] = {}
+
+    try:
+        for line in BEHAVIORAL_LOG.read_text().strip().split("\n"):
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+                ts = datetime.datetime.fromisoformat(entry["timestamp"])
+                if ts < cutoff:
+                    continue
+                domain = entry.get("domain", "unknown")
+                duration = entry.get("duration_seconds", 0)
+                title = entry.get("title", "")
+
+                domain_duration[domain] = domain_duration.get(domain, 0) + duration
+                if title and title not in domain_titles.get(domain, []):
+                    domain_titles.setdefault(domain, []).append(title)
+            except (json.JSONDecodeError, KeyError, ValueError):
+                continue
+    except Exception:
+        return ""
+
+    if not domain_duration:
+        return ""
+
+    # Rank by total duration, take top 8
+    ranked = sorted(domain_duration.items(), key=lambda x: -x[1])[:8]
+
+    lines = ["RECENT BROWSING ACTIVITY (last 7 days):"]
+    for domain, total_secs in ranked:
+        mins = total_secs // 60
+        hours = mins // 60
+        if hours > 0:
+            time_str = f"{hours}h {mins % 60}m"
+        else:
+            time_str = f"{mins}m"
+
+        sample_titles = domain_titles.get(domain, [])[:3]
+        if sample_titles:
+            titles_str = " — ".join(t[:80] for t in sample_titles)
+            lines.append(f"- {domain}: {time_str} ({titles_str})")
+        else:
+            lines.append(f"- {domain}: {time_str}")
+
+    return "\n".join(lines)
+
+
 # ─────────────────────────────────────────────
 # LLM Synthesis
 # ─────────────────────────────────────────────
 
-def synthesize_initial_response(user_message: str, vault_items: list[dict]) -> str:
+def synthesize_initial_response(user_message: str, vault_items: list[dict], behavioral_context: str = "") -> str:
     """First response: vault-aware, includes a follow-up question to deepen the conversation."""
     vault_context = _format_vault_for_prompt(vault_items)
 
@@ -217,18 +277,20 @@ def synthesize_initial_response(user_message: str, vault_items: list[dict]) -> s
 
 Your role on this FIRST message:
 1. Respond to Jay's message conversationally. Weave in 1-2 relevant vault items naturally if they connect.
-2. Ask ONE specific, open-ended follow-up question that pushes his thinking deeper — about his opinions, experiences, or plans related to what he said.
-3. Keep it to 1-2 paragraphs + the question. Don't list things.
+2. Jay's recent browsing activity may be provided — use it to understand what's been on his mind. Reference it naturally ONLY if it connects to what he said (e.g. "I noticed you've been spending time on...").
+3. Ask ONE specific, open-ended follow-up question that pushes his thinking deeper — about his opinions, experiences, or plans related to what he said.
+4. Keep it to 1-2 paragraphs + the question. Don't list things.
 
 Jay's interests: AI/ML engineering, startups, high agency, personal knowledge management, crypto/defi, tools for thought."""
 
     vault_section = f"\n\nRELEVANT ITEMS FROM JAY'S KNOWLEDGE VAULT:\n{vault_context}" if vault_items else ""
+    behavioral_section = f"\n\n{behavioral_context}" if behavioral_context else ""
 
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
             {"role": "system", "content": system},
-            {"role": "user", "content": user_message + vault_section},
+            {"role": "user", "content": user_message + vault_section + behavioral_section},
         ],
         max_tokens=400,
         temperature=0.7,
@@ -470,8 +532,11 @@ async def _process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, t
         matched_files = _search_vault(keywords) if keywords else []
         vault_items = _read_vault_files(matched_files) if matched_files else []
 
+        # Behavioral context (recent browsing patterns)
+        behavioral_context = await asyncio.to_thread(_read_behavioral_context)
+
         # Generate vault-aware response with follow-up question
-        response = await asyncio.to_thread(synthesize_initial_response, text, vault_items)
+        response = await asyncio.to_thread(synthesize_initial_response, text, vault_items, behavioral_context)
 
         # Record turns
         session["turns"].append({"role": "user", "content": text})
