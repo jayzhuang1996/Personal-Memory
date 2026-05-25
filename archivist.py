@@ -16,7 +16,7 @@ client = OpenAI(api_key=openai_key)
 # Directories
 RAW_DIR = Path("transcripts/raw")
 ARCHIVE_DIR = Path("transcripts/archive")
-MEMORY_BANK = Path("memory_bank")
+MEMORY_BANK = Path.home() / ".gbrain_vault" / "markdown"
 ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
 MEMORY_BANK.mkdir(exist_ok=True)
 
@@ -37,25 +37,27 @@ def process_transcript(file_path: Path):
     # We use a highly rigid prompt forcing JSON output so Python can parse it perfectly.
     prompt = f"""
     You are the Archivist AI for Jay's Personal Memory Bank.
-    
+
     # OBJECTIVE:
     Extract the key autobiographical data from the raw transcript.
-    Map the data entirely into ATOMIC NODES within the MEMORY BANK.
-    
+    Map the data into ATOMIC NODES following the vault taxonomy strictly.
+
     # RULES:
     1. Read the SCHEMA to understand the folder structures.
     2. Read the BUCKETS to understand what human data is important.
-    3. Generate new atomic markdown entries with YAML metadata tags.
-    4. Link concepts using [[WikiLinks]].
-    
+    3. Generate new atomic markdown entries with YAML frontmatter.
+    4. Link concepts using [[WikiLinks]] with full relative paths.
+    5. Each node must have a `category` field matching exactly one of:
+       sources/audio | identity | evergreen | ideas | drafts | published | projects
+
     # OUTPUT FORMAT:
     Output ONLY a valid JSON object. No explanation.
     {{
         "modifications": [
             {{
-                "folder": "timeline",
-                "filename": "FreightIQ_Founding.md",
-                "content_to_append": "---\\ntags: [freightiq, startups]\\ndate: 2026-04-18\\n---\\n\\n## New Entry\\nJay realized that..."
+                "category": "sources/audio",
+                "filename": "audio_2026_05_21_001.md",
+                "content_to_append": "---\\nid: audio_2026_05_21_001\\ntype: source_post\\nsource: audio\\ncategory: sources/audio\\ndate: 2026-05-21\\ntopics:\\n  - startups\\nsummary: Jay discusses founding FreightIQ.\\nstatus: inbox\\n---\\n\\nJay realized that..."
             }}
         ]
     }}
@@ -76,8 +78,17 @@ def process_transcript(file_path: Path):
         )
         data = json.loads(response.choices[0].message.content)
         
+        today = datetime.datetime.now()
+        date_path = f"{today.year}/{today.month:02d}"
+
         for mod in data.get('modifications', []):
-            folder_path = MEMORY_BANK / mod['folder']
+            # category is e.g. "sources/audio" or "identity" or "evergreen"
+            category = mod.get('category', 'sources/audio')
+            # evergreen and log have no date subfolder
+            if category in ('evergreen', 'log'):
+                folder_path = MEMORY_BANK / category
+            else:
+                folder_path = MEMORY_BANK / category / date_path
             folder_path.mkdir(parents=True, exist_ok=True)
             target_file = folder_path / mod['filename']
             

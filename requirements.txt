@@ -1,5 +1,8 @@
-python-telegram-bot[job-queue,webhooks]>=22.7
-python-dotenv
-openai
-pytz
-requests
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+httpx>=0.28.0
+pydantic>=2.0.0
+python-telegram-bot[webhooks]>=22.7
+python-dotenv>=1.0.0
+openai>=1.0.0
+requests>=2.32.0

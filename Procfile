@@ -1,1 +1,1 @@
-web: python telegram_biographer.py
+web: python railway_app.py
