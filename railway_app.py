@@ -53,6 +53,7 @@ telegram_app.add_handler(CommandHandler("start", bot_module.start_command))
 telegram_app.add_handler(CommandHandler("search", bot_module.search_command))
 telegram_app.add_handler(CommandHandler("recent", bot_module.recent_command))
 telegram_app.add_handler(CommandHandler("mode", bot_module.mode_command))
+telegram_app.add_handler(CommandHandler("done", bot_module.done_command))
 telegram_app.add_handler(
     MessageHandler(filters.TEXT & ~filters.COMMAND, bot_module.handle_text)
 )
