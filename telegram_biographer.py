@@ -11,6 +11,8 @@ GBrain Companion — Conversational Telegram bot with vault awareness and sessio
 
 import os
 import sys
+import json
+import base64
 import datetime
 import asyncio
 import hashlib
@@ -18,6 +20,7 @@ import subprocess
 from pathlib import Path
 from collections import Counter
 
+import requests
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, MessageHandler, CommandHandler, ContextTypes, filters
@@ -379,10 +382,58 @@ captured_via: telegram_companion
         filepath = folder / f"telegram_{date_str}_{unique_id}.md"
         filepath.write_text(frontmatter)
 
+        # Sync to GitHub so local machine can pull it down
+        _sync_file_to_github(filepath, frontmatter)
+
         return filepath
     except Exception as e:
         print(f"[vault write error] {e}")
         return None
+
+
+def _sync_file_to_github(filepath: Path, content: str) -> bool:
+    """Push a single vault file to GitHub via REST API."""
+    pat = os.getenv("GITHUB_PAT", "").strip()
+    if not pat:
+        print("[sync] GITHUB_PAT not set — skipping GitHub sync")
+        return False
+
+    repo = "jayzhuang1996/Personal-Memory"
+    headers = {
+        "Authorization": f"token {pat}",
+        "Accept": "application/vnd.github.v3+json",
+    }
+
+    # Store as .gbrain_vault/markdown/sources/audio/... relative to repo root
+    try:
+        rel_path = str(filepath.relative_to(Path.home()))
+    except ValueError:
+        rel_path = filepath.name
+
+    base_api = f"https://api.github.com/repos/{repo}/contents"
+    api_url = f"{base_api}/{rel_path}"
+    encoded = base64.b64encode(content.encode()).decode()
+
+    try:
+        existing = requests.get(api_url, headers=headers, timeout=10)
+        payload = {
+            "message": f"GBrain Companion: archive session {filepath.stem}",
+            "content": encoded,
+            "branch": "main",
+        }
+        if existing.status_code == 200:
+            payload["sha"] = existing.json().get("sha", "")
+
+        resp = requests.put(api_url, headers=headers, json=payload, timeout=15)
+        if resp.status_code in (200, 201):
+            print(f"[sync] Pushed to GitHub: {rel_path}")
+            return True
+        else:
+            print(f"[sync] GitHub API error {resp.status_code}: {resp.text[:200]}")
+            return False
+    except requests.RequestException as e:
+        print(f"[sync] Request failed: {e}")
+        return False
 
 
 # ─────────────────────────────────────────────
