@@ -83,7 +83,7 @@ async def telegram_webhook(request: Request):
 # ─────────────────────────────────────────────
 
 async def send_bookmarks_digest() -> int:
-    """Send a Telegram digest of recently ingested bookmarks. Returns number sent."""
+    """Read recently ingested vault files, extract full content, send Telegram digest."""
     user_chat_id = os.getenv("USER_CHAT_ID", "").strip()
     if not user_chat_id:
         logger.warning("USER_CHAT_ID not set — skipping Telegram digest")
@@ -113,27 +113,59 @@ async def send_bookmarks_digest() -> int:
             if len(parts) < 3:
                 continue
             fm = parts[1]
+            body = parts[2].strip()
+
             author = ""
-            summary = ""
             url = ""
+            summary = ""
             for line in fm.strip().split("\n"):
                 stripped = line.strip()
                 if stripped.startswith("author:"):
                     author = stripped.split(":", 1)[1].strip().strip('"')
-                elif stripped.startswith("summary:"):
-                    summary = stripped.split(":", 1)[1].strip().strip('"')
                 elif stripped.startswith("url:"):
                     url = stripped.split(":", 1)[1].strip().strip('"')
-            if summary:
-                lines.append(f"• {summary}")
-                if url:
-                    lines.append(f"  {url}")
+                elif stripped.startswith("summary:"):
+                    summary = stripped.split(":", 1)[1].strip().strip('"')
+
+            # Build digest entry with full body content
+            entry = f"[{summary or author or 'Bookmark'}]"
+            if author:
+                entry += f"\nAuthor: {author}"
+            if url:
+                entry += f"\nURL: {url}"
+
+            # Extract key sections from body
+            sections = _parse_vault_body(body)
+            if sections.get("tweet_text"):
+                tweet = sections["tweet_text"]
+                if len(tweet) > 500:
+                    tweet = tweet[:500] + "..."
+                entry += f"\n\n{tweet}"
+            if sections.get("article"):
+                article = sections["article"]
+                if len(article) > 400:
+                    article = article[:400] + "..."
+                entry += f"\n\nArticle: {article}"
+            if sections.get("visual"):
+                entry += f"\n\nVisual: {sections['visual']}"
+            if sections.get("key_takeaways"):
+                kt = sections["key_takeaways"]
+                if len(kt) > 300:
+                    kt = kt[:300] + "..."
+                entry += f"\n\nKey: {kt}"
+            if sections.get("retweeted"):
+                rt = sections["retweeted"]
+                if len(rt) > 300:
+                    rt = rt[:300] + "..."
+                entry += f"\n\nRetweeted: {rt}"
+
+            lines.append(entry)
         except Exception:
             continue
 
-    message = "\n".join(lines)
+    message = "\n\n".join(lines)
     if len(message) > 4000:
-        message = message[:4000] + "\n..."
+        message = message[:3900] + "\n\n... truncated"
 
     try:
         import httpx
@@ -153,6 +185,48 @@ async def send_bookmarks_digest() -> int:
     except Exception as e:
         logger.error(f"Telegram digest error: {e}")
         return 0
+
+
+def _parse_vault_body(body: str) -> dict[str, str]:
+    """Parse vault markdown body into labeled sections."""
+    sections: dict[str, str] = {}
+    current_section = "tweet_text"
+    current_lines: list[str] = []
+
+    for line in body.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("## Visual Description"):
+            if current_lines:
+                sections[current_section] = "\n".join(current_lines).strip()
+            current_section = "visual"
+            current_lines = []
+        elif stripped.startswith("### Key Takeaways"):
+            if current_lines:
+                sections[current_section] = "\n".join(current_lines).strip()
+            current_section = "key_takeaways"
+            current_lines = []
+        elif stripped.startswith("--- RETWEETED [") or stripped.startswith("## Retweeted Source"):
+            if current_lines:
+                sections[current_section] = "\n".join(current_lines).strip()
+            current_section = "retweeted"
+            current_lines = []
+        elif stripped.startswith("--- ARTICLE ---"):
+            if current_lines:
+                sections[current_section] = "\n".join(current_lines).strip()
+            current_section = "article"
+            current_lines = []
+        elif stripped.startswith("## ") and current_section not in ("tweet_text", ""):
+            # Next top-level section — stop collecting
+            if current_lines:
+                sections[current_section] = "\n".join(current_lines).strip()
+            break
+        else:
+            current_lines.append(line)
+
+    if current_lines and current_section:
+        sections[current_section] = "\n".join(current_lines).strip()
+
+    return sections
 
 
 async def run_bookmarks_scraper():

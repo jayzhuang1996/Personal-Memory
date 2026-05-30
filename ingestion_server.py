@@ -66,6 +66,7 @@ class CapturePayload(BaseModel):
     capture_method: str = "manual"
     category_override: str = ""   # optional: force a specific category
     media_urls: list[str] = []    # image/video URLs for vision model description
+    retweeted: dict | None = None # retweeted source info from X bookmarks scraper
 
 # ─────────────────────────────────────────────
 # DEDUPLICATION
@@ -653,6 +654,12 @@ related_to:
 """
     if visual_description:
         content += f"\n## Visual Description\n{visual_description}\n"
+    if payload.retweeted:
+        rt = payload.retweeted
+        content += f"\n## Retweeted Source\n\n**Author**: {rt.get('author', '@unknown')}\n\n"
+        if rt.get('url'):
+            content += f"**URL**: {rt['url']}\n\n"
+        content += f"{rt.get('text', '')}\n"
     if analysis_md:
         content += f"\n{analysis_md}\n"
 

@@ -32,7 +32,7 @@ INGEST_URL = f"http://localhost:{_PORT}/ingest"
 HEALTH_URL = f"http://localhost:{_PORT}/health"
 BOOKMARKS_PER_RUN = 50
 PAGE_SIZE = 20
-MAX_BOOKMARK_AGE_DAYS = 7  # skip bookmarks older than this (Twitter created_at)
+MAX_BOOKMARK_AGE_HOURS = 12  # skip bookmarks older than this (Twitter created_at)
 DELAY_BETWEEN_PAGES = 1.5
 DELAY_BETWEEN_INGESTS = 0.5
 MAX_RETRIES = 3
@@ -393,6 +393,52 @@ def extract_tweets(raw: dict, cutoff: datetime.datetime | None = None) -> list[d
                     if note_text:
                         full_text = f"{full_text}\n\n--- ARTICLE ---\n{note_text}"
 
+                # Handle retweets: extract the retweeted source's content
+                retweeted = None
+                rts = legacy.get("retweeted_status_result", {})
+                if rts:
+                    rt_result = rts.get("result", {})
+                    rt_legacy = rt_result.get("legacy", {})
+                    rt_core = rt_result.get("core", {})
+                    rt_user = (
+                        rt_core.get("user_results", {})
+                        .get("result", {})
+                        .get("legacy", {})
+                    )
+                    if rt_legacy:
+                        rt_full_text = rt_legacy.get("full_text", "")
+                        rt_full_text = _expand_tco_urls(rt_full_text, rt_legacy)
+
+                        # Check for note_tweet in the retweeted tweet
+                        rt_note_text = ""
+                        rt_note_tweet = rt_result.get("note_tweet", {})
+                        if rt_note_tweet:
+                            rt_ntr = rt_note_tweet.get("note_tweet_results", {}).get("result", {})
+                            rt_note_text = rt_ntr.get("text", "") or ""
+                            if rt_note_text:
+                                rt_full_text = f"{rt_full_text}\n\n--- ARTICLE ---\n{rt_note_text}"
+
+                        rt_media = _extract_media_urls(rt_legacy)
+                        rt_author = f"@{rt_user.get('screen_name', 'unknown')}" if rt_user else "@unknown"
+                        rt_url = (
+                            f"https://x.com/{rt_user.get('screen_name', 'i')}"
+                            f"/status/{rt_legacy.get('id_str', '')}"
+                        ) if rt_user else ""
+
+                        retweeted = {
+                            "author": rt_author,
+                            "url": rt_url,
+                            "text": rt_full_text,
+                            "media_urls": rt_media,
+                            "has_note_tweet": bool(rt_note_text),
+                        }
+
+                        # Append retweeted content to the main tweet text for ingestion
+                        full_text = (
+                            f"{full_text}\n\n--- RETWEETED [{rt_author}] ---\n{rt_full_text}"
+                        )
+                        media_urls = media_urls + rt_media
+
                 entries.append({
                     "text": full_text,
                     "author": f"@{user_results.get('screen_name', 'unknown')}",
@@ -401,8 +447,9 @@ def extract_tweets(raw: dict, cutoff: datetime.datetime | None = None) -> list[d
                         f"/status/{legacy.get('id_str', '')}"
                     ),
                     "captured_at": legacy.get("created_at", ""),
-                    "media_urls": media_urls,
+                    "media_urls": media_urls[:4],
                     "has_note_tweet": bool(note_text),
+                    "retweeted": retweeted,
                 })
     return entries, skipped_old
 
@@ -473,6 +520,7 @@ def ingest_tweet(tweet: dict) -> bool:
         "captured_at": tweet["captured_at"],
         "capture_method": "x_bookmarks_script",
         "media_urls": tweet.get("media_urls", []),
+        "retweeted": tweet.get("retweeted"),
     }
     for attempt in range(1, MAX_RETRIES + 1):
         try:
@@ -513,8 +561,8 @@ def main() -> None:
     query_id, features = _get_query_config()
 
     # 4. Fetch bookmarks (only recent ones)
-    cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=MAX_BOOKMARK_AGE_DAYS)
-    log.info("Cutoff date: %s (bookmarks older than %d days skipped)", cutoff.strftime("%Y-%m-%d"), MAX_BOOKMARK_AGE_DAYS)
+    cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=MAX_BOOKMARK_AGE_HOURS)
+    log.info("Cutoff date: %s (bookmarks older than %d hours skipped)", cutoff.strftime("%Y-%m-%d %H:%M"), MAX_BOOKMARK_AGE_HOURS)
 
     cursor = None
     all_tweets: list[dict] = []
@@ -566,7 +614,7 @@ def main() -> None:
         client.close()
         return
 
-    log.info("Ingesting %d bookmarks (%d skipped as older than %d days)...", len(all_tweets), total_skipped_old, MAX_BOOKMARK_AGE_DAYS)
+    log.info("Ingesting %d bookmarks (%d skipped as older than %d hours)...", len(all_tweets), total_skipped_old, MAX_BOOKMARK_AGE_HOURS)
     ingested = 0
     for tweet in all_tweets:
         if ingest_tweet(tweet):
