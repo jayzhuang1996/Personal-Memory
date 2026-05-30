@@ -9,6 +9,7 @@ Runs three things in one process:
 import os
 import sys
 import asyncio
+import datetime
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -81,6 +82,79 @@ async def telegram_webhook(request: Request):
 # Scheduled Bookmarks Scraper
 # ─────────────────────────────────────────────
 
+async def send_bookmarks_digest() -> int:
+    """Send a Telegram digest of recently ingested bookmarks. Returns number sent."""
+    user_chat_id = os.getenv("USER_CHAT_ID", "").strip()
+    if not user_chat_id:
+        logger.warning("USER_CHAT_ID not set — skipping Telegram digest")
+        return 0
+
+    vault_root = Path.home() / ".gbrain_vault" / "markdown" / "sources"
+    if not vault_root.exists():
+        return 0
+
+    # Find vault files modified in the last 15 minutes
+    cutoff = datetime.datetime.now() - datetime.timedelta(minutes=15)
+    recent = sorted(
+        [p for p in vault_root.rglob("*.md") if p.stat().st_mtime > cutoff.timestamp()],
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+
+    if not recent:
+        logger.info("No recent vault files for digest")
+        return 0
+
+    lines = [f"New bookmarks ({len(recent)}):\n"]
+    for fp in recent[:10]:
+        try:
+            text = fp.read_text()
+            parts = text.split("---", 2)
+            if len(parts) < 3:
+                continue
+            fm = parts[1]
+            author = ""
+            summary = ""
+            url = ""
+            for line in fm.strip().split("\n"):
+                stripped = line.strip()
+                if stripped.startswith("author:"):
+                    author = stripped.split(":", 1)[1].strip().strip('"')
+                elif stripped.startswith("summary:"):
+                    summary = stripped.split(":", 1)[1].strip().strip('"')
+                elif stripped.startswith("url:"):
+                    url = stripped.split(":", 1)[1].strip().strip('"')
+            if summary:
+                lines.append(f"• {summary}")
+                if url:
+                    lines.append(f"  {url}")
+        except Exception:
+            continue
+
+    message = "\n".join(lines)
+    if len(message) > 4000:
+        message = message[:4000] + "\n..."
+
+    try:
+        import httpx
+        api_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(api_url, json={
+                "chat_id": user_chat_id,
+                "text": message,
+                "disable_web_page_preview": True,
+            })
+            if resp.status_code == 200:
+                logger.info(f"Telegram digest sent: {len(recent)} bookmarks")
+                return len(recent)
+            else:
+                logger.error(f"Telegram digest failed: {resp.status_code} {resp.text[:200]}")
+                return 0
+    except Exception as e:
+        logger.error(f"Telegram digest error: {e}")
+        return 0
+
+
 async def run_bookmarks_scraper():
     """Run bookmarks scraper every 12 hours."""
     # Wait 60s on startup before first run (let webhook settle)
@@ -106,6 +180,8 @@ async def run_bookmarks_scraper():
             )
             if result.returncode == 0:
                 logger.info(f"Bookmarks scrape OK: {result.stdout[-300:]}")
+                # Send Telegram digest of newly ingested bookmarks
+                await send_bookmarks_digest()
             else:
                 logger.error(f"Bookmarks scrape failed (rc={result.returncode}): {result.stderr[-500:]}")
         except subprocess.TimeoutExpired:
