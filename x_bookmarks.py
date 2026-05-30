@@ -520,6 +520,7 @@ def main() -> None:
     all_tweets: list[dict] = []
     total_skipped_old = 0
     page = 0
+    empty_streak = 0
 
     while len(all_tweets) < BOOKMARKS_PER_RUN:
         page += 1
@@ -544,6 +545,15 @@ def main() -> None:
         if not cursor:
             log.info("No more pages (no cursor).")
             break
+
+        # Stop if pages return nothing — we've passed the recent cutoff window
+        if len(batch) == 0:
+            empty_streak += 1
+            if empty_streak >= 3:
+                log.info("Stopping: %d consecutive empty pages — no more recent bookmarks.", empty_streak)
+                break
+        else:
+            empty_streak = 0
 
         if len(all_tweets) >= BOOKMARKS_PER_RUN:
             break
