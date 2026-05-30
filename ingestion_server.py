@@ -427,10 +427,19 @@ def resolve_link(url: str) -> dict:
         result["type"] = "video"
         return result
 
-    if link_type == 'tweet':
-        # For tweet links, scrape the page for context
+    if link_type in ('tweet', 'social'):
+        host = parsed.netloc.lower()
+        if any(d in host for d in ['x.com', 'twitter.com']):
+            return {
+                "url": url,
+                "title": url.rstrip("/").rsplit("/", 1)[-1] if "/status/" in url else "",
+                "description": "",
+                "type": link_type,
+                "text_content": "",
+                "note": "X/Twitter content requires authentication — using tweet text only",
+            }
         result = _fetch_webpage(url)
-        result["type"] = "tweet"
+        result["type"] = link_type
         return result
 
     # Everything else: generic web scraper

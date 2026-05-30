@@ -32,6 +32,7 @@ INGEST_URL = f"http://localhost:{_PORT}/ingest"
 HEALTH_URL = f"http://localhost:{_PORT}/health"
 BOOKMARKS_PER_RUN = 50
 PAGE_SIZE = 20
+MAX_BOOKMARK_AGE_DAYS = 7  # skip bookmarks older than this (Twitter created_at)
 DELAY_BETWEEN_PAGES = 1.5
 DELAY_BETWEEN_INGESTS = 0.5
 MAX_RETRIES = 3
@@ -323,8 +324,20 @@ fetch_with_retry._cached_qid = None  # type: ignore[attr-defined]
 fetch_with_retry._cached_features = None  # type: ignore[attr-defined]
 
 
-def extract_tweets(raw: dict) -> list[dict]:
-    """Extract tweet entries from the raw bookmarks API response."""
+def _parse_twitter_date(date_str: str) -> datetime.datetime | None:
+    """Parse Twitter's created_at format: 'Mon Apr 28 12:30:00 +0000 2025'."""
+    if not date_str:
+        return None
+    try:
+        return datetime.datetime.strptime(date_str, "%a %b %d %H:%M:%S %z %Y")
+    except ValueError:
+        return None
+
+
+def extract_tweets(raw: dict, cutoff: datetime.datetime | None = None) -> list[dict]:
+    """Extract tweet entries from the raw bookmarks API response.
+    If cutoff is provided, tweets older than cutoff are skipped."""
+    skipped_old = 0
     instructions = (
         raw.get("data", {})
         .get("bookmark_timeline_v2", {})
@@ -357,12 +370,28 @@ def extract_tweets(raw: dict) -> list[dict]:
                 if not legacy:
                     continue
 
+                # Skip tweets older than the cutoff
+                if cutoff:
+                    created = _parse_twitter_date(legacy.get("created_at", ""))
+                    if created and created < cutoff:
+                        skipped_old += 1
+                        continue
+
                 # Extract media URLs from tweet entities
                 media_urls = _extract_media_urls(legacy)
 
                 # Expand t.co shortened URLs to their real destinations
                 full_text = legacy.get("full_text", "")
                 full_text = _expand_tco_urls(full_text, legacy)
+
+                # If this bookmark is an X Article (note_tweet), extract the full article text
+                note_text = ""
+                note_tweet = tweet_result.get("note_tweet", {})
+                if note_tweet:
+                    ntr = note_tweet.get("note_tweet_results", {}).get("result", {})
+                    note_text = ntr.get("text", "") or ""
+                    if note_text:
+                        full_text = f"{full_text}\n\n--- ARTICLE ---\n{note_text}"
 
                 entries.append({
                     "text": full_text,
@@ -373,8 +402,9 @@ def extract_tweets(raw: dict) -> list[dict]:
                     ),
                     "captured_at": legacy.get("created_at", ""),
                     "media_urls": media_urls,
+                    "has_note_tweet": bool(note_text),
                 })
-    return entries
+    return entries, skipped_old
 
 
 def _expand_tco_urls(text: str, legacy: dict) -> str:
@@ -482,9 +512,13 @@ def main() -> None:
     # 3. Resolve query config
     query_id, features = _get_query_config()
 
-    # 4. Fetch bookmarks
+    # 4. Fetch bookmarks (only recent ones)
+    cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=MAX_BOOKMARK_AGE_DAYS)
+    log.info("Cutoff date: %s (bookmarks older than %d days skipped)", cutoff.strftime("%Y-%m-%d"), MAX_BOOKMARK_AGE_DAYS)
+
     cursor = None
     all_tweets: list[dict] = []
+    total_skipped_old = 0
     page = 0
 
     while len(all_tweets) < BOOKMARKS_PER_RUN:
@@ -501,28 +535,28 @@ def main() -> None:
             query_id = fetch_with_retry._cached_qid
             features = fetch_with_retry._cached_features or features
 
-        batch = extract_tweets(raw)
-        if not batch:
-            log.info("No more bookmarks found.")
-            break
-
+        batch, skipped_old = extract_tweets(raw, cutoff)
+        total_skipped_old += skipped_old
         all_tweets.extend(batch)
-        log.info("  got %d tweets (total: %d)", len(batch), len(all_tweets))
+        log.info("  got %d tweets (total: %d, skipped %d old)", len(batch), len(all_tweets), skipped_old)
 
         cursor = get_next_cursor(raw)
         if not cursor:
             log.info("No more pages (no cursor).")
             break
 
+        if len(all_tweets) >= BOOKMARKS_PER_RUN:
+            break
+
         time.sleep(DELAY_BETWEEN_PAGES)
 
     # 5. Ingest
     if not all_tweets:
-        log.info("No new bookmarks to ingest.")
+        log.info("No recent bookmarks to ingest (skipped %d old).", total_skipped_old)
         client.close()
         return
 
-    log.info("Ingesting %d bookmarks...", len(all_tweets))
+    log.info("Ingesting %d bookmarks (%d skipped as older than %d days)...", len(all_tweets), total_skipped_old, MAX_BOOKMARK_AGE_DAYS)
     ingested = 0
     for tweet in all_tweets:
         if ingest_tweet(tweet):
