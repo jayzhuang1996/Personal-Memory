@@ -560,13 +560,13 @@ def main() -> None:
     # 3. Resolve query config
     query_id, features = _get_query_config()
 
-    # 4. Fetch bookmarks (only recent ones)
-    cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=MAX_BOOKMARK_AGE_HOURS)
-    log.info("Cutoff date: %s (bookmarks older than %d hours skipped)", cutoff.strftime("%Y-%m-%d %H:%M"), MAX_BOOKMARK_AGE_HOURS)
+    # 4. Fetch bookmarks (most recently bookmarked first from X API).
+    # No tweet-age filter — dedup via seen_hashes handles re-ingestion.
+    # Process up to BOOKMARKS_PER_RUN bookmarks, stopping on empty pages.
+    log.info("Fetching up to %d most recent bookmarks (dedup via ingestion server)...", BOOKMARKS_PER_RUN)
 
     cursor = None
     all_tweets: list[dict] = []
-    total_skipped_old = 0
     page = 0
     empty_streak = 0
 
@@ -584,21 +584,19 @@ def main() -> None:
             query_id = fetch_with_retry._cached_qid
             features = fetch_with_retry._cached_features or features
 
-        batch, skipped_old = extract_tweets(raw, cutoff)
-        total_skipped_old += skipped_old
+        batch, _ = extract_tweets(raw)  # no cutoff — dedup handles duplicates
         all_tweets.extend(batch)
-        log.info("  got %d tweets (total: %d, skipped %d old)", len(batch), len(all_tweets), skipped_old)
+        log.info("  got %d tweets (total: %d)", len(batch), len(all_tweets))
 
         cursor = get_next_cursor(raw)
         if not cursor:
             log.info("No more pages (no cursor).")
             break
 
-        # Stop if pages return nothing — we've passed the recent cutoff window
         if len(batch) == 0:
             empty_streak += 1
             if empty_streak >= 3:
-                log.info("Stopping: %d consecutive empty pages — no more recent bookmarks.", empty_streak)
+                log.info("Stopping: %d consecutive empty pages.", empty_streak)
                 break
         else:
             empty_streak = 0
@@ -610,11 +608,11 @@ def main() -> None:
 
     # 5. Ingest
     if not all_tweets:
-        log.info("No recent bookmarks to ingest (skipped %d old).", total_skipped_old)
+        log.info("No bookmarks found.")
         client.close()
         return
 
-    log.info("Ingesting %d bookmarks (%d skipped as older than %d hours)...", len(all_tweets), total_skipped_old, MAX_BOOKMARK_AGE_HOURS)
+    log.info("Ingesting %d bookmarks...", len(all_tweets))
     ingested = 0
     for tweet in all_tweets:
         if ingest_tweet(tweet):
