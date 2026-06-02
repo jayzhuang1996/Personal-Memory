@@ -319,5 +319,20 @@ async def health():
 # ─────────────────────────────────────────────
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
+    import sys, traceback
+    print("=== GBrain Railway App Starting ===", flush=True)
+    print(f"Python: {sys.version}", flush=True)
+    print(f"PORT: {PORT}", flush=True)
+    print(f"Railway domain: {RAILWAY_PUBLIC_DOMAIN}", flush=True)
+    print(f"Bot token set: {bool(TELEGRAM_BOT_TOKEN)}", flush=True)
+    print(f"Routes registered: {len(app.routes)}", flush=True)
+    for r in app.routes:
+        print(f"  {r.methods if hasattr(r, 'methods') else '?'} {r.path}", flush=True)
+
+    try:
+        import uvicorn
+        uvicorn.run(app, host="0.0.0.0", port=PORT)
+    except Exception as e:
+        print(f"FATAL STARTUP ERROR: {e}", flush=True)
+        traceback.print_exc()
+        sys.exit(1)
