@@ -27,6 +27,7 @@ from dotenv import load_dotenv
 
 # ── Config ──────────────────────────────────────────────────────────
 PROJECT_DIR = Path(__file__).parent.resolve()
+load_dotenv(PROJECT_DIR / ".env")
 _PORT = os.getenv("PORT", "8000")
 INGEST_URL = f"http://localhost:{_PORT}/ingest"
 HEALTH_URL = f"http://localhost:{_PORT}/health"
@@ -543,6 +544,109 @@ def ingest_tweet(tweet: dict) -> bool:
     return False
 
 
+# ── Digest ─────────────────────────────────────────────────────────────
+
+def _send_status_telegram(total: int, processed: int) -> None:
+    """Send a brief status ping when there are no new bookmarks to digest."""
+    user_chat_id = os.getenv("USER_CHAT_ID", "").strip()
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    if not user_chat_id or not bot_token:
+        return
+    msg = f"📚 X Bookmarks: {total} checked, all already in vault."
+    try:
+        httpx.post(
+            f"https://api.telegram.org/bot{bot_token}/sendMessage",
+            json={"chat_id": user_chat_id, "text": msg},
+            timeout=10,
+        )
+        log.info("Status ping sent: %s", msg)
+    except Exception as e:
+        log.error("Status ping failed: %s", e)
+
+
+def send_telegram_digest() -> bool:
+    """Send a Telegram digest of recently ingested vault files. Returns True on success."""
+    user_chat_id = os.getenv("USER_CHAT_ID", "").strip()
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    if not user_chat_id or not bot_token:
+        log.warning("USER_CHAT_ID or TELEGRAM_BOT_TOKEN not set — skipping digest")
+        return False
+
+    vault_root = Path.home() / ".gbrain_vault" / "markdown" / "sources"
+    if not vault_root.exists():
+        return False
+
+    cutoff = datetime.datetime.now() - datetime.timedelta(minutes=15)
+    recent = sorted(
+        [p for p in vault_root.rglob("*.md") if p.stat().st_mtime > cutoff.timestamp()],
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+
+    if not recent:
+        log.info("No recent vault files for digest.")
+        return False
+
+    entries = []
+    for fp in recent[:10]:
+        try:
+            text = fp.read_text()
+            parts = text.split("---", 2)
+            if len(parts) < 3:
+                continue
+            fm = parts[1]
+            body = parts[2].strip()
+
+            author = ""
+            url = ""
+            summary = ""
+            for line in fm.strip().split("\n"):
+                stripped = line.strip()
+                if stripped.startswith("author:"):
+                    author = stripped.split(":", 1)[1].strip().strip('"')
+                elif stripped.startswith("url:"):
+                    url = stripped.split(":", 1)[1].strip().strip('"')
+                elif stripped.startswith("summary:"):
+                    summary = stripped.split(":", 1)[1].strip().strip('"')
+
+            entry = f"[{summary or author or 'Bookmark'}]"
+            if author:
+                entry += f"\nAuthor: {author}"
+            if url:
+                entry += f"\nURL: {url}"
+            if body:
+                body_preview = body[:600]
+                entry += f"\n\n{body_preview}"
+
+            entries.append(entry)
+        except Exception:
+            continue
+
+    if not entries:
+        return False
+
+    message = "\n\n".join([f"New bookmarks ({len(entries)}):\n"] + entries)
+    if len(message) > 4000:
+        message = message[:3900] + "\n\n... truncated"
+
+    try:
+        api_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        resp = httpx.post(api_url, json={
+            "chat_id": user_chat_id,
+            "text": message,
+            "disable_web_page_preview": True,
+        }, timeout=15)
+        if resp.status_code == 200:
+            log.info("Telegram digest sent: %d bookmarks", len(entries))
+            return True
+        else:
+            log.error("Telegram digest failed: %s %s", resp.status_code, resp.text[:200])
+            return False
+    except Exception as e:
+        log.error("Telegram digest error: %s", e)
+        return False
+
+
 # ── Main ─────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -613,14 +717,21 @@ def main() -> None:
         return
 
     log.info("Ingesting %d bookmarks...", len(all_tweets))
+    new_count = 0
     ingested = 0
     for tweet in all_tweets:
-        if ingest_tweet(tweet):
+        result = ingest_tweet(tweet)
+        if result:
             ingested += 1
         time.sleep(DELAY_BETWEEN_INGESTS)
 
-    log.info("Done. Ingested %d/%d bookmarks.", ingested, len(all_tweets))
+    log.info("Done. Processed %d/%d bookmarks.", ingested, len(all_tweets))
     client.close()
+
+    # 6. Send digest — new bookmarks get full entry list, dups-only gets a brief status
+    digest_sent = send_telegram_digest()
+    if not digest_sent:
+        _send_status_telegram(len(all_tweets), ingested)
 
 
 if __name__ == "__main__":
